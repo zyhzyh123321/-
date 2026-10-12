@@ -1,0 +1,15 @@
+# 《分子工坊》运行时依赖
+#
+# 本机已安装以下版本，直接 `python run.py` 即可运行，无需联网：
+#   Python   3.14.3
+#   PySide6  6.12.0   （随包附带 Qt 6.12.0）
+#   numpy    2.4.4
+#
+# 换机器或重装环境时（需要联网），在项目根目录执行：
+#   python -m pip install -r requirements.txt
+#
+# 打包成 exe 另外需要 PyInstaller（见 build_exe.py）：
+#   python -m pip install pyinstaller
+
+PySide6==6.12.0
+numpy==2.4.4
