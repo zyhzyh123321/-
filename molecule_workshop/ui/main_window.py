@@ -12,6 +12,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..world import World
 from ..chem.constants import (
+    CANVAS_MIN_WIDTH,
     ELEMENTS,
     INFO_PANEL_MIN_WIDTH,
     INFO_PANEL_WIDTH,
@@ -27,8 +28,8 @@ from . import theme as th
 
 HELP_HTML = """
 <h3 style="color:#45e0d0; margin-bottom:6px;">放原子</h3>
-<p><b>从左侧原子盘按住拖到画布</b>即可放一个原子 —— 这是唯一的放置方式。
-拖到某个原子周围的蓝点附近松手，会直接吸附成键。</p>
+<p><b>从左侧原子盘拖出原子放置</b>：按住元素按钮拖到画布，松手即可放一个原子 ——
+这是唯一的放置方式。拖到某个原子周围的蓝点附近松手，会直接吸附成键。</p>
 <p>右键画布空白处也能「在此放置」。</p>
 <h3 style="color:#45e0d0; margin-bottom:6px;">四个工具</h3>
 <table cellpadding="4">
@@ -40,7 +41,7 @@ HELP_HTML = """
 <tr><td><b>平移 Space</b></td><td>拖动画布平移视图</td></tr>
 </table>
 <h3 style="color:#45e0d0; margin-bottom:6px;">改键级（双键 / 三键）</h3>
-<p>两根手指：<b>右键点那根键</b>，菜单里直接选「改为双键 / 三键 / 单键」；
+<p>两种方式：<b>右键点那根键</b>，菜单里直接选「改为双键 / 三键 / 单键」；
 或者把鼠标悬在键上按 <b>+</b> / <b>-</b>。</p>
 <p>升键需要额外插槽，程序会<b>自动脱掉自动补上的氢</b>腾出位置，
 并在提示里告诉你脱了几个（Ctrl+Z 可撤回）。例如乙烷 C—C 升双键就变成乙烯。</p>
@@ -48,7 +49,7 @@ HELP_HTML = """
 <table cellpadding="4">
 <tr><td><b>带键的原子</b></td><td>绕相连的那个原子<b>整体旋转</b> ——
     只改方向，<b>键长一丝不变</b>，身后的基团跟着一起转</td></tr>
-<tr><td><b>没有键的原子</b></td><td>跟手自由移动；几乎没动就松手会恢复原位（防手抖）</td></tr>
+<tr><td><b>没有键的原子</b></td><td>跟手自由移动，<b>拖到哪放到哪</b>（松手就停在那里）</td></tr>
 <tr><td><b>拖得足够远</b></td><td>键先变成<b>红色虚线</b>提示，松手才真正断开；
     拖回阈值内可以取消</td></tr>
 </table>
@@ -59,7 +60,13 @@ HELP_HTML = """
 <tr><td><b>中键</b></td><td>3D 模式下旋转视角；2D 模式下平移视图</td></tr>
 <tr><td><b>Shift+中键</b></td><td>平移视图（两种模式都可以）</td></tr>
 <tr><td><b>滚轮</b></td><td>以光标为中心缩放</td></tr>
-<tr><td><b>Ctrl+Z / Ctrl+Y</b></td><td>撤销 / 重做</td></tr>
+<tr><td><b>Ctrl+Z / Ctrl+Y</b></td><td>撤销 / 重做（Ctrl+Shift+Z 也可以重做）</td></tr>
+</table>
+<h3 style="color:#45e0d0; margin-bottom:6px;">其它快捷键</h3>
+<table cellpadding="4">
+<tr><td><b>Tab</b></td><td>立起来看 3D / 重新编辑（来回切换）</td></tr>
+<tr><td><b>H</b></td><td>显示 / 隐藏氢原子</td></tr>
+<tr><td><b>G</b></td><td>显示 / 隐藏参考网格</td></tr>
 </table>
 <h3 style="color:#45e0d0; margin-bottom:6px;">化合价规则</h3>
 <p>碳 4 根键、氢 1 根、氧 2 根、氮 3 根。双键占 2 个插槽，三键占 3 个。<br>
@@ -117,12 +124,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._build_statusbar()
         self._connect()
+        # 侧栏宽度是按字体算出来的，所以窗口下限也得跟着算 ——
+        # 否则在大字体/高缩放的机器上，900 px 的下限会让画布被挤到没有。
+        self.setMinimumSize(self._min_window_width(), WINDOW_MIN_HEIGHT)
 
         self.canvas.say("从左侧原子盘**按住拖到画布**即可放原子；连键请从蓝点起拖", 6000)
         self.info.update_from_world(self.world)
         self._on_world_changed()
 
     # ------------------------------------------------------------------
+
+    def _min_window_width(self) -> int:
+        """按当前字体算出窗口最小宽度。
+
+        组成（与 _build 里的布局一一对应）：
+            左右外边距 12+12 + 侧栏 + 间距 12
+            + [画布下限 + 间距 12 + 资料面板下限]  ← 都在 QSplitter 里
+        侧栏和资料面板的宽度都取决于字体，所以不能硬写 900 ——
+        大字体机器上侧栏能到 334 px，写死 900 会把画布压到几乎看不见。
+        """
+        return (12 + self.side.panel_width + 12
+                + CANVAS_MIN_WIDTH + 12 + INFO_PANEL_MIN_WIDTH + 12)
 
     def _build_statusbar(self) -> None:
         bar = self.statusBar()
@@ -390,13 +412,41 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.renderer.show_hydrogens = on
         self.canvas.update()
 
+    def build_help_dialog(self) -> QtWidgets.QDialog:
+        """操作说明弹窗：可滚动、可缩放。
+
+        早先这里用 QMessageBox 塞一大段 HTML —— 内容超过一定高度就
+        直接裁掉、看不到下半截，也没有滚动条。改成 QDialog + QTextBrowser：
+        QTextBrowser 原生支持富文本和垂直滚动。
+        """
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("操作说明")
+        dlg.resize(600, 560)
+        dlg.setMinimumSize(480, 400)
+
+        root = QtWidgets.QVBoxLayout(dlg)
+        root.setContentsMargins(12, 12, 12, 12)
+
+        viewer = QtWidgets.QTextBrowser(dlg)
+        viewer.setOpenExternalLinks(False)
+        viewer.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.WidgetWidth)
+        viewer.setHtml(HELP_HTML)
+        viewer.setObjectName("helpViewer")
+        root.addWidget(viewer, 1)
+
+        close_btn = QtWidgets.QPushButton("关闭")
+        close_btn.setDefault(True)
+        close_btn.clicked.connect(dlg.accept)
+        row = QtWidgets.QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(close_btn)
+        root.addLayout(row)
+
+        dlg.help_viewer = viewer        # 供测试与后续调整使用
+        return dlg
+
     def _on_help(self) -> None:
-        box = QtWidgets.QMessageBox(self)
-        box.setWindowTitle("操作说明")
-        box.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        box.setText(HELP_HTML)
-        box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
-        box.exec()
+        self.build_help_dialog().exec()
 
     def _on_undo(self) -> None:
         if self.world.undo():

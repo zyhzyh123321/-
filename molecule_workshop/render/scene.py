@@ -574,7 +574,7 @@ class SceneRenderer:
         painter.drawText(
             QtCore.QRectF(0, 0, camera.width, camera.height),
             QtCore.Qt.AlignmentFlag.AlignCenter,
-            "点左侧元素按钮，再在画布空白处点一下放原子",
+            "拖出原子放置：按住左侧原子盘里的元素拖到画布",
         )
         painter.restore()
 

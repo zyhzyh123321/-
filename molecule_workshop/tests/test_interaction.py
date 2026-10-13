@@ -3,7 +3,7 @@
 覆盖四块：
     A. 空插槽几何 —— 「氢原子互相重叠」与「吸附到已满碳」的修复
     B. 画布交互   —— 鼠标模式不再放原子、选择/多选/框选、X 删除所选、放置工具
-    C. 拖动与断键 —— 超阈值断键、未达阈值恢复原位、撤销/重做
+    C. 拖动与断键 —— 超阈值断键、自由原子拖到哪放到哪、撤销/重做
     D. 界面        —— 窄窗口自适应、分子选择器、撤销重做按钮状态
 
 Qt 相关测试用 offscreen 平台，必须在导入 PySide6 **之前**设置环境变量；
@@ -524,29 +524,43 @@ def test_small_drag_of_bonded_atom_rotates_and_keeps_length(canvas):
     assert abs(moved.y) > 0.1, f"方向应该变了，实得 y={moved.y:.3f}"
 
 
-def test_small_drag_of_free_atom_restores_position(canvas):
-    """**没有键**的原子小幅拖动后仍恢复原位（防手抖）。"""
+def test_free_atom_stays_where_dropped(canvas):
+    """**没有键**的原子：拖到哪放到哪，松手就停在那里（v5 起不再回位）。"""
     w = canvas.world
     lone = w.create_atom("C", 0.0, 0.0)[2]
     canvas._fit_view(animate=False)
     lx, ly = screen_of(canvas, w.atom(lone.uid))
     scale = canvas.camera.screen_scale()
-    drag(canvas, lx, ly, lx + 0.12 * scale, ly)
+    drag(canvas, lx, ly, lx + 0.6 * scale, ly)
     moved = w.atom(lone.uid)
-    assert abs(moved.x) < 1e-6 and abs(moved.y) < 1e-6, \
-        f"孤立原子应恢复原位，实得 ({moved.x:.3f}, {moved.y:.3f})"
+    assert abs(moved.x - 0.6) < 0.02, \
+        f"孤立原子应停在拖到的位置（x≈0.6），实得 ({moved.x:.3f}, {moved.y:.3f})"
 
 
-def test_small_drag_of_free_atom_leaves_no_undo_entry(canvas):
-    """孤立原子位置恢复后撤销栈不该留空记录（否则 Ctrl+Z 像没反应）。"""
+def test_free_atom_drag_leaves_undo_entry(canvas):
+    """孤立原子拖到新位置后**要**留下撤销点（位置确实变了）。"""
     w = canvas.world
     lone = w.create_atom("C", 0.0, 0.0)[2]
     w.clear_history()
     canvas._fit_view(animate=False)
     lx, ly = screen_of(canvas, w.atom(lone.uid))
     scale = canvas.camera.screen_scale()
-    drag(canvas, lx, ly, lx + 0.12 * scale, ly)
-    assert w.undo_depth() == 0, f"不该留下撤销点，实得 {w.undo_depth()}"
+    drag(canvas, lx, ly, lx + 0.6 * scale, ly)
+    assert w.undo_depth() == 1, f"真实拖动应留下一个撤销点，实得 {w.undo_depth()}"
+
+
+def test_free_atom_click_without_move_leaves_no_undo_entry(canvas):
+    """原地按下松开（没移动）= 什么都没改 → 不留撤销点。"""
+    w = canvas.world
+    lone = w.create_atom("C", 0.0, 0.0)[2]
+    w.clear_history()
+    canvas._fit_view(animate=False)
+    lx, ly = screen_of(canvas, w.atom(lone.uid))
+    press_at(canvas, lx, ly)
+    release_at(canvas, lx, ly)
+    moved = w.atom(lone.uid)
+    assert abs(moved.x) < 1e-9 and abs(moved.y) < 1e-9, "位置不该变"
+    assert w.undo_depth() == 0, f"原地点击不该留撤销点，实得 {w.undo_depth()}"
 
 
 def test_bonded_small_drag_keeps_undo_entry(canvas):
@@ -1030,6 +1044,32 @@ def test_break_all_bonds_handles_multiple_orders():
 # ============================================================================
 
 
+def test_empty_canvas_hint_says_drag_out(canvas):
+    """空画布中央提示应为「拖出原子放置」，不再让玩家去点画布空白。"""
+    import inspect
+    from molecule_workshop.render.scene import SceneRenderer
+    src = inspect.getsource(SceneRenderer._paint_hud)
+    assert "拖出原子放置" in src, "中央提示应是新文案"
+    assert "点左侧元素按钮" not in src, "旧文案不该残留"
+
+
+def test_help_dialog_is_scrollable_and_current(window, qapp):
+    """操作说明弹窗：必须可滚动，内容与当前交互一致。"""
+    dlg = window.build_help_dialog()
+    dlg.show()
+    qapp.processEvents()
+    viewer = dlg.help_viewer
+    # 可滚动：内容高度超过视口
+    assert viewer.verticalScrollBar().maximum() > 0, \
+        "帮助内容应比视口高（有滚动条），否则下半截看不到"
+    text = viewer.toPlainText()
+    for word in ("拖出原子放置", "蓝点", "双键", "自动脱", "两种方式", "Tab"):
+        assert word in text, f"帮助缺少关键说明：{word}"
+    for stale in ("恢复原位", "点击左侧", "点左侧元素按钮", "放置 A", "两根手指"):
+        assert stale not in text, f"帮助里还有过期说法：{stale}"
+    dlg.close()
+
+
 def test_info_panel_selector_lists_all_molecules(qapp):
     from molecule_workshop.ui.info_panel import InfoPanel
     w = World()
@@ -1124,11 +1164,41 @@ def window(qapp):
     return win
 
 
-def test_window_minimum_matches_layout_needs(window):
-    """窗口最小宽度必须够放下三栏（早先 1000 < 实际需要的约 1094，会错位）。"""
-    from molecule_workshop.chem.constants import WINDOW_MIN_WIDTH
-    assert window.minimumWidth() == WINDOW_MIN_WIDTH
-    assert window.minimumWidth() >= 900
+def test_window_minimum_matches_layout_needs(window, qapp):
+    """缩到窗口下限时，三栏都不能被压扁。
+
+    v5 起这个下限是**算**出来的（侧栏宽度随字体变化），不再是常数。
+    这里不去复算那个公式 —— 直接缩到下限，然后量实际结果，
+    这样即使以后布局改了，测试依然能抓住"画布被挤没"这类问题。
+    """
+    from molecule_workshop.chem.constants import CANVAS_MIN_WIDTH
+    window.resize(window.minimumWidth(), window.minimumHeight())
+    for _ in range(3):
+        window.layout().activate()
+        qapp.processEvents()
+    assert window.side.width() >= 200, f"侧栏被压到 {window.side.width()} px"
+    assert window.canvas.width() >= CANVAS_MIN_WIDTH, \
+        f"画布被挤到 {window.canvas.width()} px（下限 {CANVAS_MIN_WIDTH}）"
+
+
+def test_sidebar_never_squeezes_its_buttons(window):
+    """侧栏不能把自己里面的按钮压扁 —— 压扁就会叠字（本次修的问题）。
+
+    早先侧栏写死 226 px，而内容区可用宽正好等于最宽按钮宽（余量 0 px），
+    字体稍微大一点就会顶出按钮、文字糊成一团。
+    """
+    from PySide6 import QtGui, QtWidgets
+    inner = window.side.width() - 2 * 14
+    for btn in window.side.findChildren(QtWidgets.QPushButton):
+        if not btn.text() or not btn.isVisible():
+            continue
+        fm = QtGui.QFontMetrics(btn.font())
+        icon_w = btn.iconSize().width() + 8 if not btn.icon().isNull() else 0
+        need = fm.horizontalAdvance(btn.text()) + icon_w + 20
+        assert btn.width() >= need, \
+            f"{btn.text().strip()[:14]!r} 需要 {need} px，实际只有 {btn.width()} px"
+        assert btn.width() <= inner, \
+            f"{btn.text().strip()[:14]!r} 比内容区还宽（{btn.width()} > {inner}）"
 
 
 def test_narrow_window_auto_collapses_info_panel(window, qapp):

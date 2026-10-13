@@ -355,7 +355,7 @@ class CanvasWidget(QtWidgets.QWidget):
             atom = self.world.atom(uid)
             if atom is None:
                 return
-            # 记录起始状态：拖动可能被"恢复原位"或"断键"，都需要它
+            # 记录起始状态：拖动可能"断键"或需要回退（带键原子），都需要它
             self._drag_start_snapshot = self.world.snapshot()
             self.world.push_undo()
             self._dragging_uid = uid
@@ -619,20 +619,23 @@ class CanvasWidget(QtWidgets.QWidget):
                 else:
                     self.say(msg, 2600)
             elif cand is not None and not cand.feasible:
-                # 目标插槽不够 → 回原位，别让原子停在半路上
-                self._restore_drag(uid, start_pos)
+                # 目标插槽不够 → 提示原因。
+                # 带键的原子退回原位（它只是旋转，不能凭空换位置）；
+                # 没键的原子按「拖到哪放到哪」，留在原地。
+                if bool(self.world.neighbors(uid)):
+                    self._restore_drag(uid, start_pos)
                 self.say(cand.reason, 2600)
             else:
                 # 没有吸附、也没断键：
-                #   有键的原子 → **保留旋转后的姿态**（玩家要的就是改方向）
-                #   没键的原子且确实移动过 → 恢复原位（防手抖）
+                #   有键的原子 → 保留旋转后的姿态（玩家要的就是改方向）
+                #   没键的原子 → **拖到哪放到哪**（v5 起不再恢复原位）
                 has_bonds = bool(self.world.neighbors(uid))
-                # 自由移动且确实挪动过 → 恢复原位（防手抖）；
-                # 带键的原子保留旋转后的姿态（玩家要的就是改方向）。
                 if not has_bonds and atom is not None and start_pos is not None:
-                    if math.dist((atom.x, atom.y), start_pos) > DRAG_RESTORE_EPS:
-                        self._restore_drag(uid, start_pos)
-                        self.say("位置已恢复（想拔下来请拖远一些超过断键阈值）", 3200)
+                    moved = math.dist((atom.x, atom.y), start_pos)
+                    if moved <= DRAG_RESTORE_EPS and self._drag_start_snapshot is not None:
+                        # 原地按下松开 = 什么都没改 → 弹掉这次压入的撤销点，
+                        # 别让 Ctrl+Z 看起来像「没反应」
+                        self.world.pop_last_undo_if_unchanged(self._drag_start_snapshot)
 
             self._drag_start_snapshot = None
             self._restore_cursor()
@@ -818,8 +821,9 @@ class CanvasWidget(QtWidgets.QWidget):
     def _restore_drag(self, uid: int, start_pos: tuple[float, float] | None) -> None:
         """把原子放回拖动前的位置，并弹掉这次拖动压入的撤销点。
 
-        为什么要弹撤销点：这次拖动最终什么都没改（位置恢复了），
-        不该在撤销栈里留一条空记录，否则玩家按 Ctrl+Z 会觉得"没反应"。
+        现在只用于**带键原子**的两种失败回退（吸附到已满宿主、升键失败）：
+        它只是旋转未果，退回原位不产生变化，撤销点要一起弹掉。
+        没键的原子不再走这里 —— 拖到哪放到哪（v5）。
         """
         if start_pos is not None:
             atom = self.world.atom(uid)

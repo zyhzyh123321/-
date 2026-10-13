@@ -2,6 +2,13 @@
 
 元素按钮带元素色的球体图示，工具按钮显示快捷键；
 「立起来看 3D / 重新编辑」按当前模式切换显示。
+
+**面板宽度由字体度量算出来，不写死**：
+    早先这里写死 `setFixedWidth(226)`。在那台机器上没问题，但换个
+    显示缩放（125%/150%）或换个字体，同样 13px 的字会占更多像素，
+    写死的宽度就装不下 —— 表现是文字互相重叠、糊成一团。
+    现在改成「量一遍所有控件真正需要多宽，再留出内边距」，
+    字体变大面板就跟着变宽，永远不会挤坏。
 """
 from __future__ import annotations
 
@@ -10,6 +17,13 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ..chem.constants import ELEMENTS, PLACEABLE
 from ..chem.vector import hex_to_rgb
 from ..render.canvas import TOOLS
+
+#: 侧栏设计宽度（在标准 DPI / 微软雅黑 13px 下就是它）
+SIDE_PANEL_WIDTH = 226
+#: 侧栏左右内边距（见 _build 里的 setContentsMargins）
+SIDE_PANEL_MARGIN = 14
+#: 宽度下限，保证再小的字体也不至于挤成一条
+SIDE_PANEL_MIN_WIDTH = 200
 
 
 def sphere_icon(hex_color: str, size: int = 18) -> QtGui.QIcon:
@@ -125,13 +139,97 @@ class SidePanel(QtWidgets.QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("panel")
-        self.setFixedWidth(226)
+        self._panel_width = 0
         self._build()
+        self._apply_width()
+
+    @property
+    def panel_width(self) -> int:
+        """面板的设计宽度。
+
+        给布局计算用 —— 不要拿 `width()`：构造期间控件可能还没被布局，
+        `width()` 会返回 100 之类的默认值，算出来的窗口下限就偏小。
+        """
+        return self._panel_width or SIDE_PANEL_WIDTH
 
     def _section(self, root: QtWidgets.QVBoxLayout, title: str) -> None:
         lbl = QtWidgets.QLabel(title)
         lbl.setObjectName("sectionLabel")
         root.addWidget(lbl)
+
+    # ------------------------------------------------------------------
+    # 宽度：量出来，不写死
+    # ------------------------------------------------------------------
+
+    #: 内容区与最宽按钮之间要留的余量。
+    #: 实测发现原来的写法余量正好是 0：内容区 198 px、最宽按钮 198 px，
+    #: 一个像素的富余都没有。于是只要字体稍微大一点（125% 显示缩放、
+    #: 或系统换了字体），文字就会顶出按钮、和相邻控件叠在一起，
+    #: 看起来就是"糊成一团"。留 12 px 之后就有真正的容错空间。
+    WIDTH_SLACK = 12
+
+    def content_width(self) -> int:
+        """面板里的控件真正需要多宽（不含左右内边距）。
+
+        组成 = 最宽按钮的文字宽度 + 该按钮的"附加宽度"（图标、图标间距、
+        样式表 padding、边框）。
+
+        附加宽度用 `QStyle` 的 cmHint 算，**不靠已经布局出来的宽度反推**：
+        构造阶段控件还没被布局，宽度是默认的 100 px，反推出来的 chrome
+        会是 0，于是面板永远停在 226 不动 —— 实测字体放大到 2 倍时
+        内容区还是 198 px，文字早就顶出去了。
+        """
+        needed = 0
+        style = self.style()
+        for btn in self.findChildren(QtWidgets.QPushButton):
+            if not btn.text():
+                continue
+            fm = QtGui.QFontMetrics(btn.font())
+            icon_w = 0
+            if not btn.icon().isNull():
+                icon_w = btn.iconSize().width() + 8       # 图标 + 间距
+            cm = style.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_ButtonMargin, None, btn)
+            frame = style.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_DefaultFrameWidth, None, btn)
+            # 样式表 QPushButton#elemButton/#toolButton 给的是 padding: 7px 10px
+            needed = max(needed, fm.horizontalAdvance(btn.text())
+                         + icon_w + 2 * max(cm, 10) + 2 * frame)
+        for lbl in self.findChildren(QtWidgets.QLabel):
+            if lbl.text():
+                needed = max(needed,
+                             QtGui.QFontMetrics(lbl.font()).horizontalAdvance(lbl.text()))
+        return needed
+
+    def _apply_width(self) -> None:
+        """按当前字体算出并固定面板宽度。
+
+        量之前必须先 `ensurePolished()`：否则子控件还没套上样式表里的
+        `font-size: 13px`，量到的是默认字号，算出来的宽度永远偏小 ——
+        实测把字体调到 20px 时仍算出 226，文字早就顶出面板了。
+        """
+        self.ensurePolished()
+        for child in self.findChildren(QtWidgets.QWidget):
+            child.ensurePolished()
+        width = max(SIDE_PANEL_WIDTH,
+                    self.content_width() + 2 * SIDE_PANEL_MARGIN + self.WIDTH_SLACK)
+        self.setFixedWidth(width)
+        self.setMinimumWidth(width)
+        self._panel_width = width
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:      # noqa: N802
+        """显示时再核对一次宽度（此时字体/样式一定已经生效）。"""
+        super().showEvent(event)
+        self._apply_width()
+
+    def _on_style_or_font_change(self) -> None:
+        """字体或样式变化后重新算宽度（换 DPI、换主题、换字体会走到这里）。"""
+        self._apply_width()
+
+    def changeEvent(self, event: QtCore.QEvent) -> None:      # noqa: N802
+        """字体/样式变化时重量一次宽度（换 DPI、换主题都会走到这里）。"""
+        super().changeEvent(event)
+        if event.type() in (QtCore.QEvent.Type.FontChange,
+                            QtCore.QEvent.Type.StyleChange):
+            self._on_style_or_font_change()
 
     def _build(self) -> None:
         root = QtWidgets.QVBoxLayout(self)

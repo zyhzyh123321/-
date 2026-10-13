@@ -260,6 +260,18 @@ def main() -> int:
     win.canvas.say("拖带键的原子只会改方向，键长一点不变", 5000)
     shoot(win, "37_app_rotate.png")
 
+    # ---- 16. 操作说明弹窗（可滚动）----
+    dlg = win.build_help_dialog()
+    dlg.show()
+    for _ in range(3):
+        app.processEvents()
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    pix = dlg.grab()
+    path = OUT_DIR / "38_app_help_dialog.png"
+    ok = pix.save(str(path))
+    print(f"  {'OK ' if ok else 'FAIL'} 38_app_help_dialog.png  {pix.width()}x{pix.height()}")
+    dlg.close()
+
     print("\n输出目录:", OUT_DIR)
     return 0
 
