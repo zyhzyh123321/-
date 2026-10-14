@@ -134,6 +134,9 @@ class World:
         self._redo: list[dict] = []
         self.last_message: str = ""         # 最近一次操作的提示（供界面显示）
         self.last_removed_hydrogens: list[int] = []   # 最近一次升键自动脱掉的氢
+        # 附加状态编解码器（画布注册相机用）
+        self._state_get = None
+        self._state_set = None
 
     # ------------------------------------------------------------------
     # 查询
@@ -333,6 +336,37 @@ class World:
     # ------------------------------------------------------------------
     # 自动补氢
     # ------------------------------------------------------------------
+
+    def predict_hydrogen_additions(self) -> int:
+        """试算「补满氢」会新增几个原子（**不改变任何东西**）。
+
+        测试报告 P1：立起来时先补氢、再发现超限失败，氢已悄悄改坏画布
+        且不可撤销。正确做法是先算好规模，超限就直接拒绝 —— 一个氢都不补。
+        公式与 auto_fill_hydrogens 的 need_to_add 完全一致：
+            化合价 - 与重原子的键用量 - 已挂着的氢数。
+        """
+        total = 0
+        for atom in self.atoms:
+            if atom.el == "H":
+                continue
+            info = ELEMENTS.get(atom.el)
+            if info is None:
+                continue
+            heavy_used = 0
+            h_attached = 0
+            for bond in self.bonds:
+                if bond.a != atom.uid and bond.b != atom.uid:
+                    continue
+                other_uid = bond.b if bond.a == atom.uid else bond.a
+                other = self.atom(other_uid)
+                if other is None:
+                    continue
+                if other.el == "H":
+                    h_attached += 1
+                else:
+                    heavy_used += bond.order
+            total += max(0, info["valence"] - heavy_used - h_attached)
+        return total
 
     def auto_fill_hydrogens(self, max_total: int = MAX_ATOMS) -> dict:
         """按每个重原子的剩余价键数补满氢原子。
@@ -790,17 +824,27 @@ class World:
                 continue
 
             free = self.free_valence(host.uid)
-            feasible = free > 0
+            # P4：feasible 不能只看宿主 —— 被拖的原子自己满价时，
+            # 吸过去也连不上（实测：满价碳被吸到插槽点、键却没加上）。
+            moving_free = self.free_valence(moving_uid)
+            feasible = free > 0 and moving_free > 0
             reason = ""
             if not feasible:
-                reason = f"{info['name']}的 {info['valence']} 个价键已用满"
+                if moving_free <= 0:
+                    reason = f"{moving.el}自己的价键已用满，不能再连"
+                else:
+                    reason = f"{info['name']}的 {info['valence']} 个价键已用满"
 
-            if feasible:
+            # 落点来源要分「宿主满」和「被拖的原子满」两种情况：
+            #   宿主有空位 → 用真正的空插槽点（哪怕 moving 自己满价，
+            #                   也要给出候选，好让界面提示原因）；
+            #   宿主满了   → 用「最宽空档」估一个方向，仅用于提示。
+            # 早先这里按 feasible 分支 —— moving 满价时 feasible 也是 False，
+            # 结果走成了「宿主已满」的提示路径，拿到的方向对孤立原子只有
+            # 一个 (1,0)，落点离插槽 1.414 键长，候选根本产生不出来。
+            if free > 0:
                 slots = self.free_slot_points(host.uid)
             else:
-                # 已满的宿主没有空位可给，但仍要看一眼最近的方向，
-                # 好让界面能说明「这里连不上，因为碳已经满了」。
-                # 用「最宽空档」算一个方向即可，不参与实际成键。
                 dirs = self._relaxed_directions(host.uid)
                 slots = [((dx, dy), (host.x + dx, host.y + dy)) for dx, dy in dirs]
 
@@ -867,20 +911,28 @@ class World:
 
 
     def apply_snap(self, moving_uid: int, candidate: SnapCandidate) -> tuple[bool, str]:
-        """把原子精确吸附到候选落点并成键。"""
+        """把原子精确吸附到候选落点并成键。
+
+        P4 修复：add_bond 失败时要把位置退回 —— 早先先挪位置、后成键，
+        失败不回滚，原子停在插槽点上却没连上（实测满价碳就是这样）。
+        """
         moving = self.atom(moving_uid)
         if moving is None:
             return False, "原子不存在"
         if not candidate.feasible:
             return False, candidate.reason or "插槽不足"
+        prev = (moving.x, moving.y)
         moving.x, moving.y = candidate.point
         self._invalidate_geometry()
         ok, msg = self.add_bond(moving_uid, candidate.host_uid, 1)
-        if ok:
-            # 新键改变了双方的插槽方向 → 把已有的氢重新摆正
-            self.tidy_hydrogens(moving_uid)
-            self.tidy_hydrogens(candidate.host_uid)
-        return ok, msg
+        if not ok:
+            moving.x, moving.y = prev
+            self._invalidate_geometry()
+            return False, msg
+        # 新键改变了双方的插槽方向 → 把已有的氢重新摆正
+        self.tidy_hydrogens(moving_uid)
+        self.tidy_hydrogens(candidate.host_uid)
+        return True, ""
 
     # ------------------------------------------------------------------
     # 识别
@@ -1289,12 +1341,21 @@ class World:
     # ------------------------------------------------------------------
 
     def snapshot(self) -> dict:
-        return {
+        snap = {
             "atoms": [(a.uid, a.el, a.x, a.y, a.pos3, a.auto_h) for a in self.atoms],
             "bonds": [(b.a, b.b, b.order) for b in self.bonds],
             "mode": self.mode,
             "next_uid": self._next_uid,
         }
+        # 相机状态（由画布注册的编解码器提供，化学层不关心内容）。
+        # 测试报告 P5：3D 下撤销后相机残留透视角度，平面被投影变形 ——
+        # 把相机纳入快照后，撤销/重做连视角一起恢复。
+        if self._state_get is not None:
+            try:
+                snap["camera"] = self._state_get()
+            except Exception:            # noqa: BLE001 相机问题不该毁掉快照
+                pass
+        return snap
 
     def restore(self, snap: dict) -> None:
         self.atoms = [
@@ -1304,6 +1365,23 @@ class World:
         self.bonds = [WorldBond(a, b, o) for (a, b, o) in snap["bonds"]]
         self.mode = snap["mode"]
         self._next_uid = snap["next_uid"]
+        if "camera" in snap and self._state_set is not None:
+            try:
+                self._state_set(snap["camera"])
+            except Exception:            # noqa: BLE001
+                pass
+        # 注意：这里**不能**调 _invalidate_geometry() —— 它会把手动把
+        # mode 拨回 build、清掉 pos3，3D 状态的撤销/重做就被毁掉了。
+        # 快照里的 pos3 / mode 就是权威值，原样恢复即可。
+
+    def set_state_codec(self, getter, setter) -> None:
+        """注册「世界之外的附加状态」编解码器（相机用它）。
+
+        化学层不知道相机是什么 —— 只负责在快照里带上/恢复一段
+        由调用方解释的状态。画布在构造时注册相机编解码器。
+        """
+        self._state_get = getter
+        self._state_set = setter
 
     # 兼容旧的私有名字（canvas 里在用）
     _snapshot = snapshot
@@ -1311,7 +1389,16 @@ class World:
 
     def push_undo(self) -> None:
         """记录一个撤销点。任何新操作都会清空重做栈（标准语义）。"""
-        self._undo.append(self.snapshot())
+        self.commit_undo(self.snapshot())
+
+    def commit_undo(self, before: dict) -> None:
+        """统一入口：把「操作前快照」提交成撤销点。
+
+        stand_up 这类「先快照、再执行、后提交」的操作用它 ——
+        早先它直接 `_undo.append(before)`，绕过了清重做栈和 40 条上限
+        （测试报告 P3：立起来后 Ctrl+Y 会回放旧操作、撤销栈无限增长）。
+        """
+        self._undo.append(before)
         if len(self._undo) > UNDO_STACK_SIZE:
             self._undo.pop(0)
         self._redo.clear()

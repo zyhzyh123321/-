@@ -104,7 +104,7 @@ python run.py
 | 中键拖动 | 3D 视图里旋转视角；2D 平面里平移视图 |
 | `Shift` + 中键拖动 | 平移视图（两种模式都可） |
 | 滚轮 | 以光标为中心缩放 |
-| 空格键 / 「立起来看 3D」 | 自动补氢并算出真实立体构型，切到 3D |
+| `Tab` 键 / 「立起来看 3D」 | 自动补氢并算出真实立体构型，切到 3D |
 | 「重新编辑」 | 回到平面，原来的布局不会被打乱 |
 | `Ctrl+Z` / 左侧「撤销」按钮 | 撤销（按钮上会显示还能撤销几步） |
 | `Ctrl+Y` / `Ctrl+Shift+Z` / 左侧「重做」按钮 | 重做 |
@@ -241,9 +241,9 @@ python run.py
 | 整库求解 | 46 个分子共 1.1 s |
 | 最慢的分子 | 环己烷 53 ms |
 | 库反查识别 | 46/46 命中 |
-| 全部测试 | **127 项通过**（`python -m pytest molecule_workshop/tests/ -q -p no:cacheprovider`） |
+| 全部测试 | **140 项通过**（`python -m pytest molecule_workshop/tests/ -q -p no:cacheprovider`） |
 | ├ 化学内核 | 64 项（`tests/test_chem.py`） |
-| └ 交互与界面 | 63 项（`tests/test_interaction.py`） |
+| └ 交互与界面 | 76 项（`tests/test_interaction.py`） |
 | 界面帧率 | 60 fps（绘制约 16 ms/帧，1280×820） |
 
 ---
@@ -424,7 +424,7 @@ python run.py
 │  │  └─ main_window.py          主窗口装配
 │  ├─ tests/
 │  │  ├─ test_chem.py            化学内核测试（64 项）
-│  │  └─ test_interaction.py     交互与界面测试（63 项）
+│  │  └─ test_interaction.py     交互与界面测试（76 项）
 └─ tools/
    ├─ check_geometry.py          3D 构型质量检查（各分子键长键角实测）
    ├─ ring_angle_study.py        环几何护栏 + 踩坑记录（改动几何后必跑）

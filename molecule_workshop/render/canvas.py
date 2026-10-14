@@ -25,7 +25,6 @@ from ..chem.constants import (
     CANVAS_MIN_HEIGHT,
     CANVAS_MIN_WIDTH,
     DRAG_BREAK_DIST,
-    DRAG_RESTORE_EPS,
     DRAG_ROTATE_MIN_PX,
     ELEMENTS,
     MARQUEE_MIN_PX,
@@ -98,6 +97,11 @@ class CanvasWidget(QtWidgets.QWidget):
         # 否则相机宽高为 0，命中测试与坐标换算全部失效
         # （表现为"点原子选不中、点空白清不掉选择"）。
         self._sync_camera()
+
+        # 把相机纳入撤销/重做快照（测试报告 P5：3D 下撤销后相机残留
+        # 透视角度，build 模式的平面分子被倾斜投影、拖动手感错乱）。
+        # 化学层通过 set_state_codec 存/取这段状态，不知道相机是什么。
+        self.world.set_state_codec(self._camera_state_get, self._camera_state_set)
 
         # 交互状态
         self._dragging_uid: int | None = None
@@ -629,13 +633,13 @@ class CanvasWidget(QtWidgets.QWidget):
                 # 没有吸附、也没断键：
                 #   有键的原子 → 保留旋转后的姿态（玩家要的就是改方向）
                 #   没键的原子 → **拖到哪放到哪**（v5 起不再恢复原位）
-                has_bonds = bool(self.world.neighbors(uid))
-                if not has_bonds and atom is not None and start_pos is not None:
-                    moved = math.dist((atom.x, atom.y), start_pos)
-                    if moved <= DRAG_RESTORE_EPS and self._drag_start_snapshot is not None:
-                        # 原地按下松开 = 什么都没改 → 弹掉这次压入的撤销点，
-                        # 别让 Ctrl+Z 看起来像「没反应」
-                        self.world.pop_last_undo_if_unchanged(self._drag_start_snapshot)
+                # 无论带不带键：只要世界和按下时**一模一样**（原地点击、
+                # 断键后又拖回取消），就弹掉这条空撤销记录。
+                # 早先只对没键的原子弹（P2 残留：带键原子单击同样留下
+                # "按 Ctrl+Z 没反应"的空记录；断键取消路径也一样）。
+                if (self._drag_start_snapshot is not None
+                        and self.world.snapshot() == self._drag_start_snapshot):
+                    self.world.pop_last_undo_if_unchanged(self._drag_start_snapshot)
 
             self._drag_start_snapshot = None
             self._restore_cursor()
@@ -1074,6 +1078,17 @@ class CanvasWidget(QtWidgets.QWidget):
         self.update()
         return ok
 
+    def _camera_state_get(self):
+        """相机状态 → 可比较/可恢复的元组（随快照存储）。"""
+        c = self.camera
+        return (c.azimuth, c.elevation, c.zoom, c.pan_x, c.pan_y)
+
+    def _camera_state_set(self, state) -> None:
+        """从快照恢复相机状态（scale/width/height 是会话配置，不恢复）。"""
+        c = self.camera
+        c.azimuth, c.elevation, c.zoom, c.pan_x, c.pan_y = state
+        self.update()
+
     # ------------------------------------------------------------------
     # 立起来 / 回到平面
     # ------------------------------------------------------------------
@@ -1084,19 +1099,37 @@ class CanvasWidget(QtWidgets.QWidget):
             return
         if self.world.mode == "view3d":
             return
+
+        # ---- P1 修复：先试算补氢规模，超限就不补、不动世界 ----
+        # 早先的顺序是「先补氢 → 再发现超限 → 直接 return」，
+        # 90 个氢已经写进画布且没有撤销点，Ctrl+Z 救不回来。
+        predicted = self.world.predict_hydrogen_additions()
+        if self.world.atom_count + predicted > RELAX_MAX_ATOMS:
+            self.say(f"原子太多：补满氢后约 {self.world.atom_count + predicted} 个原子，"
+                     f"超过 {RELAX_MAX_ATOMS} 个上限，不再自动补氢、也不立起来", 5200)
+            return
+
+        before = self.world.snapshot()          # 含相机状态；供失败回滚 / 成功提交
         fill = self.world.auto_fill_hydrogens()
         if self.world.atom_count > RELAX_MAX_ATOMS:
+            self.world.restore(before)          # 双保险：补氢过程被截断也要回滚
             self.say(f"原子太多（{self.world.atom_count} 个），超过 {RELAX_MAX_ATOMS} 个后不再自动算构型", 4200)
+            self.world_changed.emit()
+            self.update()
             return
         self.say("正在按真实键角计算立体构型…", 1500)
         QtWidgets.QApplication.processEvents()
 
-        before_undo = self.world._snapshot()
         ok, msg, radius = self.world.solve_geometry()
         if not ok:
+            # ---- P1 修复：求解失败时把补进去的氢全部回滚 ----
+            self.world.restore(before)
             self.say(msg, 4000)
+            self.world_changed.emit()
+            self.update()
             return
-        self.world._undo.append(before_undo)
+        # ---- P3 修复：统一提交入口（清重做栈、守 40 条上限）----
+        self.world.commit_undo(before)
 
         # 动画：从编辑平面插值到求解结果
         self._anim_uids = [a.uid for a in self.world.atoms]

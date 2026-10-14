@@ -33,7 +33,7 @@ from molecule_workshop.chem.constants import (  # noqa: E402
     SLOT_MIN_SEPARATION,
     SLOT_SNAP_RADIUS,
 )
-from molecule_workshop.world import World  # noqa: E402
+from molecule_workshop.world import SnapCandidate, World  # noqa: E402
 
 
 # ----------------------------------------------------------------------------
@@ -1068,6 +1068,160 @@ def test_help_dialog_is_scrollable_and_current(window, qapp):
     for stale in ("恢复原位", "点击左侧", "点左侧元素按钮", "放置 A", "两根手指"):
         assert stale not in text, f"帮助里还有过期说法：{stale}"
     dlg.close()
+
+
+# ============================================================================
+# C5. 测试报告回归（P1 / P2 残留 / P3 / P4 / P5）
+# ============================================================================
+
+
+def test_bonded_atom_click_leaves_no_undo_entry(canvas):
+    """带键原子原地单击 = 什么都没改 → 不留撤销点（P2 残留修复）。"""
+    w = canvas.world
+    a = w.create_atom("C", 0.0, 0.0)[2]
+    b = w.create_atom("C", 1.0, 0.0)[2]
+    w.add_bond(a.uid, b.uid, 1)
+    w.clear_history()
+    canvas._fit_view(animate=False)
+    bx, by = screen_of(canvas, w.atom(b.uid))
+    press_at(canvas, bx, by)
+    release_at(canvas, bx, by)
+    assert w.bond_count == 1, "键不该动"
+    assert w.undo_depth() == 0, f"带键原子单击不该留撤销点，实得 {w.undo_depth()}"
+
+
+def test_break_cancel_drag_leaves_no_undo_entry(canvas):
+    """拖远触发断键 → 拖回原位取消 → 松手：世界没变，不留撤销点（P2 同源残留）。"""
+    w = canvas.world
+    a = w.create_atom("C", 0.0, 0.0)[2]
+    b = w.create_atom("C", 1.0, 0.0)[2]
+    w.add_bond(a.uid, b.uid, 1)
+    w.clear_history()
+    canvas._fit_view(animate=False)
+    bx, by = screen_of(canvas, w.atom(b.uid))
+    press_at(canvas, bx, by)
+    far_x, far_y = screen_of(canvas, 4.0, 0.0)
+    move_to(canvas, far_x, far_y)
+    assert canvas.renderer.breaking_uid == b.uid, "应先进入将断键状态"
+    # 拖回**按下时的位置**：旋转量回到 0，世界恢复起始姿态
+    move_to(canvas, bx, by)
+    assert canvas.renderer.breaking_uid is None, "拖回应取消断键"
+    release_at(canvas, bx, by)
+    assert w.bond_count == 1, "键还在"
+    bb = w.atom(b.uid)
+    assert abs(bb.x - 1.0) < 1e-9 and abs(bb.y) < 1e-9, "原子应回到起始姿态"
+    assert w.undo_depth() == 0, f"断键取消后不该留撤销点，实得 {w.undo_depth()}"
+
+
+def test_undo_after_stand_up_restores_top_down_camera(canvas):
+    """3D 立起来 + 转视角后撤销 → 相机回到正视（P5 修复：相机入快照）。"""
+    w = canvas.world
+    c1 = w.create_atom("C", 0.0, 0.0)[2]
+    c2 = w.create_atom("C", 1.0, 0.0)[2]
+    w.add_bond(c1.uid, c2.uid, 1)
+    w.clear_history()
+    canvas._fit_view(animate=False)
+    canvas.stand_up()
+    assert w.mode == "view3d"
+    canvas._anim_timer.stop()
+    # 玩家在 3D 里转视角
+    canvas.camera.orbit(120, 80)
+    assert abs(canvas.camera.azimuth) > 0.1, "先确认视角确实转了"
+
+    assert w.undo() is True
+    assert w.mode == "build", "撤销应回到平面模式"
+    assert abs(canvas.camera.azimuth) < 1e-9 and abs(canvas.camera.elevation) < 1e-9, \
+        f"撤销后相机应回到正视，实得 az={canvas.camera.azimuth:.3f} el={canvas.camera.elevation:.3f}"
+
+
+def test_snapshot_carries_camera_state(canvas):
+    """快照应带相机状态（P5 的机制保证）。"""
+    canvas.camera.orbit(60, 40)
+    snap = canvas.world.snapshot()
+    assert "camera" in snap, "快照里应有相机状态"
+    canvas.camera.reset(top_down=True)
+    canvas.world.restore(snap)
+    assert abs(canvas.camera.azimuth - 60 * 0.008) < 1e-9, "restore 应恢复相机方位角"
+
+
+def test_stand_up_refuses_when_too_many_atoms(canvas):
+    """补氢后超上限：先试算、直接拒绝 —— 一个氢都不补、世界不动（P1 修复）。"""
+    w = canvas.world
+    prev_uid = None
+    for i in range(70):
+        atom = w.create_atom("C", float(i), 0.0)[2]
+        if prev_uid is not None:
+            w.add_bond(prev_uid, atom.uid, 1)
+        prev_uid = atom.uid
+    assert w.atom_count == 70
+    w.clear_history()
+    canvas._fit_view(animate=False)
+    canvas.stand_up()
+    assert w.atom_count == 70, f"超限时不该补氢，实得 {w.atom_count} 个原子"
+    assert w.mode == "build", "不应进入 3D"
+    assert w.undo_depth() == 0, "拒绝操作不该留撤销点"
+
+
+def test_stand_up_clears_redo(canvas):
+    """立起来是新的编辑操作 → 清空重做栈（P3 修复）。"""
+    w = canvas.world
+    # 先制造一条重做记录：创建氧 → 撤销
+    w.push_undo()
+    oxy = w.create_atom("O", 5.0, 5.0)[2]
+    assert w.undo() is True
+    assert w.redo_depth() == 1, "先确认重做栈有 1 条"
+
+    # 再搭个乙烷立起来
+    c1 = w.create_atom("C", 0.0, 0.0)[2]
+    c2 = w.create_atom("C", 1.0, 0.0)[2]
+    w.add_bond(c1.uid, c2.uid, 1)
+    canvas._fit_view(animate=False)
+    canvas.stand_up()
+    assert w.mode == "view3d"
+    assert w.redo_depth() == 0, f"立起来后重做栈应清空，实得 {w.redo_depth()}"
+    assert w.undo_depth() == 1, f"立起来应留下一个撤销点，实得 {w.undo_depth()}"
+
+
+def test_saturated_moving_atom_snap_is_infeasible():
+    """满价原子拖到空插槽：候选不可行（P4 修复：feasible 要查 moving 自己）。"""
+    w = World()
+    host = w.create_atom("C", 0.0, 0.0)[2]
+    full = w.create_atom("C", 0.9, 0.9)[2]
+    for ang in range(4):
+        h = w.create_atom("H", full.x + math.cos(ang * math.pi / 2),
+                          full.y + math.sin(ang * math.pi / 2))[2]
+        w.add_bond(full.uid, h.uid, 1)
+    assert w.free_valence(full.uid) == 0
+    # 把满价碳放到宿主插槽点附近
+    _d, point = w.free_slot_points(host.uid)[0]
+    w.move_atom(full.uid, point[0], point[1])
+    cand = w.find_snap_candidate(full.uid)
+    assert cand is not None, "应该给出候选（用于提示原因）"
+    assert cand.feasible is False, "满价原子不该吸附"
+    assert "价键已用满" in cand.reason, f"原因要说清，实得 {cand.reason!r}"
+
+
+def test_apply_snap_failure_restores_position():
+    """apply_snap 成键失败 → 位置回滚（P4 修复）。"""
+    w = World()
+    host = w.create_atom("C", 0.0, 0.0)[2]
+    full = w.create_atom("C", 3.0, 0.0)[2]
+    for ang in range(4):
+        h = w.create_atom("H", full.x + math.cos(ang * math.pi / 2),
+                          full.y + math.sin(ang * math.pi / 2))[2]
+        w.add_bond(full.uid, h.uid, 1)
+    before = (full.x, full.y)
+    # 构造一个"宿主可行"的候选（模拟拖到插槽点、且 moving 检查被绕过的情况）
+    _d, point = w.free_slot_points(host.uid)[0]
+    fake = SnapCandidate(host_uid=host.uid, host_el="C", point=point,
+                         direction=(0.0, 0.0), distance=0.1, angle_deviation=0.0,
+                         feasible=True, slot_index=0)
+    ok, _msg = w.apply_snap(full.uid, fake)
+    assert ok is False, "满价原子成键必须失败"
+    assert abs(w.atom(full.uid).x - before[0]) < 1e-9, \
+        f"失败后位置应回滚，实得 x={w.atom(full.uid).x:.4f}"
+    assert abs(w.atom(full.uid).y - before[1]) < 1e-9
+    assert w.bond_count == 4, "不该新增键"
 
 
 def test_info_panel_selector_lists_all_molecules(qapp):

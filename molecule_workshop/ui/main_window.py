@@ -128,7 +128,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 否则在大字体/高缩放的机器上，900 px 的下限会让画布被挤到没有。
         self.setMinimumSize(self._min_window_width(), WINDOW_MIN_HEIGHT)
 
-        self.canvas.say("从左侧原子盘**按住拖到画布**即可放原子；连键请从蓝点起拖", 6000)
+        self.canvas.say("从左侧原子盘按住拖到画布即可放原子；连键请从蓝点起拖", 6000)
         self.info.update_from_world(self.world)
         self._on_world_changed()
 
@@ -241,7 +241,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.selected_element = symbol
         self.canvas.setFocus()
         name = ELEMENTS.get(symbol, {}).get("name", symbol)
-        self.canvas.say(f"已选中{name}：**按住它拖到画布上**即可放一个原子"
+        self.canvas.say(f"已选中{name}：按住它拖到画布上即可放一个原子"
                         f"（也可以右键画布选「在此放置」）", 3600)
 
     def _on_tool(self, tool: str) -> None:

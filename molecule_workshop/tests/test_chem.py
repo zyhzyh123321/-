@@ -469,9 +469,8 @@ def test_parse_multi_fragment():
 def test_parse_bracket_atom_hydrogens():
     """方括号写法：元素符号 + 氢数（[C3] = 带 3 个显式氢的碳，[O] = 0 个氢）。
 
-    实现与文档不一致（已记录、不改引擎）：parse_spec 与 molecules.js 的文档里
-    写的是 [CH3]，但词法只认「元素 + 数字」，所以 [CH3] 会抛 ParseError
-    （网页版基准的同一段正则行为完全一样，不是移植引入的回归）。
+    [CH3] 也能解析（H 后面的数字 3 被当作氢数，实测等价于 [C3]）——
+    早先注释说它「会抛 ParseError」，与实现不符，已更正。
     另外解析出的 h_count 目前只存在 Atom 上，heavy_graph 仍按显式氢原子计数，
     所以方括号写法暂不影响识别；库里没有任何 spec 用到它。
     """
@@ -482,6 +481,8 @@ def test_parse_bracket_atom_hydrogens():
     assert [b.order for b in mol.bonds] == [1]
     # 不带数字时氢数记为 0：[O] 表示不带显式氢的氧
     assert [a.h_count for a in parse_spec("[O]").atoms] == [0]
+    # [CH3] 与 [C3] 等价（H 后跟数字）
+    assert [a.h_count for a in parse_spec("[CH3]").atoms] == [3]
 
 
 PARSE_ERROR_CASES = [
@@ -610,7 +611,7 @@ def test_cyclopentane_ring_angle():
 
 
 def test_cyclohexane_is_chair_not_planar():
-    """环己烷必须是椅式：环碳最大离平面 > 0.3 Å（实测 0.5084 Å）。
+    """环己烷必须是椅式：环碳最大离平面 > 0.3 Å（实测 1.677 Å）。
 
     平面六边形会让相邻碳上的氢挤到约 1.78 Å 产生强排斥；
     实测 attempts=1 时会停在 0.095 Å 的近平面构型，默认 4 次尝试才落到椅式。
