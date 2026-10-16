@@ -4,3 +4,12 @@ __pycache__/
 pytest-cache-files-*/
 .venv/
 venv/
+
+# PyInstaller 打包产物：体积很大（build + dist 约 120 MB），不进版本控制。
+# 换机器后重新 `python build_exe.py` 或 `pyinstaller 分子工坊.spec` 即可生成。
+# 注意 分子工坊.spec 要保留（它是打包配置，已改成相对路径），所以不忽略 *.spec。
+build/
+dist/
+
+# 离屏自查用的诊断临时图（out/ 里的正式截图仍然保留）
+out/_*.png

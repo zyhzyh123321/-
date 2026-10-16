@@ -399,7 +399,9 @@ python run.py
 ├─ run.py                        启动入口：python run.py
 ├─ requirements.txt              依赖清单（PySide6、numpy）
 ├─ build_exe.py                  PyInstaller 单文件打包脚本
+├─ 分子工坊.spec                 打包配置（入口用 SPECPATH 相对定位，可移植）
 ├─ README.md                     本文件
+├─ build/  dist/                 打包产物（约 120 MB，已 gitignore，不进版本控制）
 ├─ molecule_workshop/
 │  ├─ chem/                      化学内核（纯计算，不依赖界面）
 │  │  ├─ constants.py            元素表 / 键长 / 键角 / 参数（调参只看这个文件）

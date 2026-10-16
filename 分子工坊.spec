@@ -1,8 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
-
+#
+# 入口用 SPECPATH 拼相对路径，**不写死绝对路径**：
+# 早先这里写的是 C:/Users/18190/Desktop/...，换电脑或挪动目录后
+# `pyinstaller 分子工坊.spec` 会直接报找不到脚本。
+import os
 
 a = Analysis(
-    ['C:/Users/18190/Desktop/vscode 123/分子工坊/run.py'],
+    [os.path.join(SPECPATH, 'run.py')],
     pathex=[],
     binaries=[],
     datas=[],
